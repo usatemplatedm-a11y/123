@@ -1,0 +1,56 @@
+name: Build Painted Worlds Forge 1.20.1
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
+      - name: Unpack original Painted Worlds sources
+        run: |
+          python -m pip install --quiet brotli
+          python - <<'PY'
+          import json, pathlib, base64, brotli
+          files=json.loads(brotli.decompress(base64.b64decode(pathlib.Path('sources.payload.txt').read_text())).decode('utf8'))
+          for name, contents in files.items():
+              path=pathlib.Path(name)
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_text(contents,encoding='utf8')
+          print('Unpacked',len(files),'source files')
+          PY
+      - name: Generate placeholder textures for source-only build
+        run: |
+          python - <<'PY'
+          import pathlib,struct,zlib
+          def png(path,w,h,color):
+              path=pathlib.Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+              raw=b''.join(b'\0'+bytes(color)*w for y in range(h))
+              def ck(typ,payload):return struct.pack('>I',len(payload))+typ+payload+struct.pack('>I',zlib.crc32(typ+payload)&0xffffffff)
+              path.write_bytes(b'\x89PNG\r\n\x1a\n'+ck(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+ck(b'IDAT',zlib.compress(raw,9))+ck(b'IEND',b''))
+          base='src/main/resources/assets/paintedworlds/textures/'
+          png(base+'item/blank_canvas.png',16,16,(247,243,216,255))
+          png(base+'item/return_canvas.png',16,16,(133,203,139,255))
+          for n,c in [('fire',(192,72,38,255)),('sky',(135,193,234,255)),('ocean',(30,115,189,255)),('dark',(76,62,98,255)),('forest',(70,136,70,255)),('ruins',(160,156,133,255))]:
+              png(base+'entity/walker_'+n+'.png',64,64,c)
+          PY
+      - name: Build
+        run: gradle --no-daemon --stacktrace build
+      - name: Upload JAR
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paintedworlds-forge-1.20.1
+          path: build/libs/*.jar
+          if-no-files-found: error
